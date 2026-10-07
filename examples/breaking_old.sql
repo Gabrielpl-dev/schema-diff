@@ -1,0 +1,5 @@
+CREATE TABLE users (
+  id INT PRIMARY KEY,
+  email VARCHAR(100),
+  active BOOLEAN NOT NULL DEFAULT TRUE
+);
