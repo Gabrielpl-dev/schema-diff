@@ -11,6 +11,7 @@ class Column:
     type: str                 # canonical lower-case form (4.2)
     not_null: bool = False
     default: str | None = None  # normalized default expression
+    serial: bool = False  # retain sequence-generating DDL without changing the signature
     # Inline PRIMARY KEY / UNIQUE flags collected while parsing, converted into
     # synthetic constraints once the table name is known.
     pending_constraints: list[str] = field(default_factory=list)
@@ -30,6 +31,7 @@ class Constraint:
     # PRIMARY KEY / UNIQUE) rather than as a table-level element.  This does not
     # affect identity (3.4) but controls reporting for added tables.
     inline: bool = False
+    named: bool = True  # explicit SQL name, distinct from synthetic diff identity
 
     def signature(self) -> dict:
         return {

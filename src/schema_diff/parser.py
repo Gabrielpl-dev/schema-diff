@@ -209,7 +209,8 @@ def _parse_create_table(stream: _Stream, schema: Schema) -> None:
             for ckind in column.pending_constraints:
                 cname = synth_name(table_name, ckind, [column.name])
                 table.constraints[cname] = Constraint(
-                    name=cname, kind=ckind, table=table_name, columns=[column.name], inline=True
+                    name=cname, kind=ckind, table=table_name, columns=[column.name],
+                    inline=True, named=False
                 )
             column.pending_constraints = []
         else:
@@ -239,7 +240,7 @@ def _parse_element(stream: _Stream, table_name: str) -> tuple[str, object]:
 def _parse_column(stream: _Stream) -> Column:
     name = stream.expect_ident().value
     type_name, is_serial = _parse_type(stream)
-    column = Column(name=name, type=type_name)
+    column = Column(name=name, type=type_name, serial=is_serial)
     if is_serial:
         column.not_null = True
         column.default = "nextval"
@@ -354,11 +355,17 @@ def _parse_table_constraint(
         if len(columns) > 2:
             stream._fail("composite PRIMARY KEY with more than 2 columns is not supported")
         name = explicit_name or synth_name(table_name, "primary_key", columns)
-        return Constraint(name=name, kind="primary_key", table=table_name, columns=columns)
+        return Constraint(
+            name=name, kind="primary_key", table=table_name, columns=columns,
+            named=explicit_name is not None,
+        )
     if stream.accept_keyword("unique"):
         columns = _parse_column_list(stream)
         name = explicit_name or synth_name(table_name, "unique", columns)
-        return Constraint(name=name, kind="unique", table=table_name, columns=columns)
+        return Constraint(
+            name=name, kind="unique", table=table_name, columns=columns,
+            named=explicit_name is not None,
+        )
     if stream.accept_keyword("foreign"):
         stream.expect_keyword("key")
         columns = _parse_column_list(stream)
@@ -376,6 +383,7 @@ def _parse_table_constraint(
             table=table_name,
             columns=columns,
             references={"table": ref_table, "columns": ref_columns},
+            named=explicit_name is not None,
         )
     if stream.at_keyword("check"):
         stream._fail("CHECK is not supported")

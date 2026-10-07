@@ -296,5 +296,5 @@ def is_widening(old_type: str, new_type: str) -> bool:
     if family == "varchar":
         return new[1] > old[1]
     if family == "numeric":
-        return new[1] > old[1] and new[2] >= old[2]
+        return new[2] >= old[2] and new[1] - new[2] >= old[1] - old[2]
     return False

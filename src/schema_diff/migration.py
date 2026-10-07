@@ -22,10 +22,13 @@ def render_default(expr: str) -> str:
 
 
 def render_column_fragment(column: Column) -> str:
-    parts = [column.name, render_type(column.type)]
+    type_name = render_type(column.type)
+    if column.serial:
+        type_name = "BIGSERIAL" if column.type == "bigint" else "SERIAL"
+    parts = [column.name, type_name]
     if column.not_null:
         parts.append("NOT NULL")
-    if column.default is not None:
+    if column.default is not None and not (column.serial and column.default == "nextval"):
         parts.extend(["DEFAULT", render_default(column.default)])
     return " ".join(parts)
 
@@ -48,9 +51,46 @@ def render_constraint_fragment(constraint: Constraint) -> str:
 def _table_create_sql(table: Table) -> str:
     lines = [f"  {render_column_fragment(column)}" for column in table.columns.values()]
     for constraint in table.constraints.values():
-        lines.append("  " + render_constraint_fragment(constraint))
+        prefix = f"CONSTRAINT {constraint.name} " if constraint.named else ""
+        lines.append("  " + prefix + render_constraint_fragment(constraint))
     body = ",\n".join(lines)
     return f"CREATE TABLE {table.name} (\n{body}\n);"
+
+
+def _sql_literal(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _postgres_drop_constraint(constraint: Constraint) -> str:
+    if constraint.named:
+        return f"ALTER TABLE {constraint.table} DROP CONSTRAINT {constraint.name};"
+    # Resolve the actual name at execution time: PostgreSQL can truncate names
+    # and append collision suffixes, so guessing its default name is unsafe.
+    table = _sql_literal(constraint.table)
+    columns = ", ".join(_sql_literal(c) for c in constraint.columns)
+    kind = {"primary_key": "p", "unique": "u", "foreign_key": "f"}[constraint.kind]
+    reference = ""
+    if constraint.references:
+        ref = constraint.references
+        ref_columns = ", ".join(_sql_literal(c) for c in ref["columns"])
+        reference = (
+            f" AND confrelid = {_sql_literal(ref['table'])}::regclass"
+            " AND confkey = ARRAY(SELECT attnum FROM unnest("
+            f"ARRAY[{ref_columns}]::text[]) WITH ORDINALITY AS cols(name, position) "
+            "JOIN pg_attribute ON attrelid = confrelid AND attname = cols.name "
+            "ORDER BY position)"
+        )
+    return (
+        "DO $$\nDECLARE constraint_name text;\nBEGIN\n"
+        "  SELECT conname INTO STRICT constraint_name FROM pg_constraint "
+        f"WHERE conrelid = {table}::regclass AND contype = '{kind}' "
+        "AND conkey = ARRAY(SELECT attnum FROM unnest("
+        f"ARRAY[{columns}]::text[]) WITH ORDINALITY AS cols(name, position) "
+        "JOIN pg_attribute ON attrelid = conrelid AND attname = cols.name "
+        f"ORDER BY position){reference};\n"
+        "  EXECUTE format('ALTER TABLE %s DROP CONSTRAINT %I', "
+        f"{table}::regclass, constraint_name);\nEND $$;"
+    )
 
 
 def _dependencies(names: set[str], get_constraints) -> dict[str, set[str]]:
@@ -129,7 +169,7 @@ class MigrationBuilder:
             if self.dialect == "mysql":
                 commands.append(f"ALTER TABLE {change.table} DROP FOREIGN KEY {constraint.name};")
             else:
-                commands.append(f"ALTER TABLE {change.table} DROP CONSTRAINT {constraint.name};")
+                commands.append(_postgres_drop_constraint(constraint))
         return sorted(commands)
 
     def _phase_drop_keys_and_indexes(
@@ -149,7 +189,7 @@ class MigrationBuilder:
                 else:
                     commands.append(f"ALTER TABLE {change.table} DROP INDEX {constraint.name};")
             else:
-                commands.append(f"ALTER TABLE {change.table} DROP CONSTRAINT {constraint.name};")
+                commands.append(_postgres_drop_constraint(constraint))
         for change in list(index_removed) + list(index_changed):
             index = self.old.indexes[change.object]
             if index.table not in self.new.tables:
